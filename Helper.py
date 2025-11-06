@@ -1,21 +1,166 @@
-# last upated: 3/19/2025
+# last upated: 4/12/2025
 # helper.py
 import os
 import pandas as pd
+import numpy as np  # Make sure numpy is imported
 import matplotlib.pyplot as plt
 from pymoo.visualization.scatter import Scatter
+from scipy.spatial.distance import cdist  # [NEW] Import cdist
 
 
 class Helper:
+    # [MOVED] This function was in breast_cancer_main.py
+    @staticmethod
+    def find_nearest_viable_cluster(empty_cluster_label, all_centroids, all_cluster_labels, label_counts,
+                                    desired_label):
+        """
+        Finds the cluster that is (1) viable (contains desired_label) and
+        (2) closest to the empty cluster.
+        """
+        print(f":   Finding nearest viable neighbor to {empty_cluster_label}...")
+
+        # 1. Get the centroid of the empty cluster
+        # We must parse the cluster index from the label (e.g., "C3" -> 2)
+        empty_cluster_index = all_cluster_labels.index(empty_cluster_label)
+        empty_centroid = all_centroids[empty_cluster_index]
+
+        viable_clusters = []
+        for cluster_name, counts in label_counts.items():
+            if cluster_name != empty_cluster_label and counts.get(desired_label, 0) > 0:
+                viable_clusters.append(cluster_name)
+
+        if not viable_clusters:
+            raise Exception("Fallback Failed: No other clusters contain any desirable samples.")
+
+        min_dist = float('inf')
+        best_fallback_cluster = None
+
+        # 2. Find the closest centroid among the viable clusters
+        for cluster_name in viable_clusters:
+            cluster_index = all_cluster_labels.index(cluster_name)
+            viable_centroid = all_centroids[cluster_index]
+
+            # Calculate Euclidean distance
+            dist = np.linalg.norm(empty_centroid - viable_centroid)
+
+            if dist < min_dist:
+                min_dist = dist
+                best_fallback_cluster = cluster_name
+
+        print(f":   Nearest viable cluster is {best_fallback_cluster} (Distance: {min_dist:.2f})")
+        return best_fallback_cluster
+
+    # [MOVED] This function was in breast_cancer_main.py
+    @staticmethod
+    def find_seed_and_boundaries(fallback_cluster_name, clustered_df, data_wo_label, original_instance_index,
+                                 desired_label,
+                                 class_label):
+        """
+        Finds the closest "seed" instance from the fallback cluster and
+        defines new search boundaries based on it.
+        """
+        print(f":   Finding seed instance in {fallback_cluster_name}...")
+
+        # 1. Get the original instance's features as a 2D DataFrame
+        original_instance_features = data_wo_label.loc[[original_instance_index]]
+
+        # 2. Get all viable samples from the fallback cluster
+        viable_samples = clustered_df[
+            (clustered_df['cluster'] == fallback_cluster_name) &
+            (clustered_df[class_label] == desired_label)
+            ]
+
+        if viable_samples.empty:
+            raise Exception(
+                f"Fallback Failed: Viable cluster {fallback_cluster_name} mysteriously has no desired samples.")
+
+        # Get just the features of these viable samples
+        viable_samples_features = viable_samples.drop(columns=[class_label, 'cluster'])
+
+        # 3. Calculate distances from original instance to all viable samples
+        distances = cdist(original_instance_features, viable_samples_features, metric='euclidean')
+
+        # 4. Get the iloc (integer position) of the closest sample
+        closest_sample_iloc = distances.argmin()
+
+        # 5. Get the seed instance's features (as a 2D DataFrame)
+        seed_instance = viable_samples_features.iloc[[closest_sample_iloc]]
+
+        print(f":   Seed instance found (original index: {seed_instance.index.values})")
+
+        # 6. Define new boundaries as a "bounding box" containing both points
+        combined_features = pd.concat([original_instance_features, seed_instance])
+        fallback_min_values = combined_features.min()
+        fallback_max_values = combined_features.max()
+
+        return fallback_min_values, fallback_max_values
+
+    # [MOVED] This function was in hierarchical_cluster_main.py
+    @staticmethod
+    def find_nearest_viable_sample(df_all_features, df_all_labels, original_instance_index, empty_cluster_data,
+                                   desired_label, class_label):
+        """
+        Finds the single closest "good" sample from the entire dataset,
+        excluding those in the empty cluster.
+        """
+        print(f":   Finding nearest viable sample (outside empty cluster)...")
+
+        # 1. Get the original instance's features (as a 2D DataFrame)
+        original_instance_features = df_all_features.loc[[original_instance_index]]
+
+        # 2. Get all viable samples from *outside* the empty cluster
+        # Get indices of samples *not* in the empty cluster
+        outside_indices = df_all_features.index.difference(empty_cluster_data.index)
+
+        # Filter all data to get viable samples from outside
+        viable_samples_outside = df_all_labels[
+            (df_all_labels.index.isin(outside_indices)) &
+            (df_all_labels[class_label] == desired_label)
+            ]
+
+        if viable_samples_outside.empty:
+            raise Exception("Fallback Failed: No viable samples found in the entire dataset.")
+
+        # 3. Get just the features of these viable samples
+        viable_features_outside = df_all_features.loc[viable_samples_outside.index]
+
+        # 4. Calculate distances from original instance to all viable samples
+        distances = cdist(original_instance_features, viable_features_outside, metric='euclidean')
+
+        # 5. Get the iloc (integer position) of the closest sample
+        closest_sample_iloc = distances.argmin()
+
+        # 6. Get the seed instance's features (as a 2D DataFrame)
+        seed_instance_features = viable_features_outside.iloc[[closest_sample_iloc]]
+
+        print(f":   Nearest viable seed instance found (original index: {seed_instance_features.index.values})")
+
+        return seed_instance_features
+
+    # [MOVED] This function was in hierarchical_cluster_main.py & knn_bound_main.py
+    @staticmethod
+    def find_seed_and_boundaries_from_sample(original_instance_features, seed_instance_features):
+        """
+        Creates a bounding box from an original instance and a seed instance.
+        """
+        print(f":   Defining new search boundaries...")
+
+        # 1. Define new boundaries as a "bounding box" containing both points
+        combined_features = pd.concat([original_instance_features, seed_instance_features])
+        fallback_min_values = combined_features.min()
+        fallback_max_values = combined_features.max()
+
+        return fallback_min_values, fallback_max_values
+
     @staticmethod
     def save_hist_FX(
-        hist_F,
-        hist_X,
-        extracted_data_name,
-        cluster_mode,
-        pop_size,
-        sample_idx,
-        data_wo_label,
+            hist_F,
+            hist_X,
+            extracted_data_name,
+            cluster_mode,
+            pop_size,
+            sample_idx,
+            data_wo_label,
     ):
         col_list = data_wo_label.columns.tolist()
         data = []
@@ -35,179 +180,115 @@ class Helper:
         print("hist_FX is saved to CSV.")
 
     @staticmethod
-    def plot_scatter(problem, sample_idx, seed, cluster_mode, k=None):
-        plt.figure(figsize=(8, 6))
-        plt.scatter(
-            problem.all_f1,
-            problem.all_f2,
-            alpha=0.7,
-            edgecolors="k",
-            label="Objective Values",
-        )
-        plt.scatter(
-            problem.max_error,
-            problem.max_distance,
-            color="red",
-            label="Reference Point",
-        )
-        plt.title(
-            f"Scatter plot of f1 and f2 {cluster_mode} (Sample: {sample_idx}, Seed: {seed})"
-        )
-        plt.xlabel("f1 (Error)")
-        plt.ylabel("f2 (Distance)")
-        plt.legend(loc="center", bbox_to_anchor=(0.5, 0.5))
-        plt.grid(True)
+    def plot_scatter(pareto_front, problem, sample_idx, seed, cluster_mode, k=None):
+        """
+        Plots the Pareto front.
+
+        Args:
+            pareto_front (np.array): The final Pareto front (F from res).
+            problem (CFProblem): The problem instance, to get all_f1/all_f2.
+            sample_idx (int): The index of the sample.
+            seed (int): The random seed.
+            cluster_mode (str): The name of the clustering mode (for file naming).
+            k (int, optional): The value of k if using knn.
+        """
         if not os.path.exists("scatter_plots_files"):
             os.makedirs("scatter_plots_files")
 
+        # Set the plot title
+        plot_title = f"Pareto Front (Sample: {sample_idx}, Seed: {seed})"
+
+        # Use a new plot object
+        plot = Scatter(title=plot_title, labels=["Error", "Distance"])
+
+        # Access problem.all_f1 and problem.all_f2
+        # Add all evaluated solutions in grey
+        if hasattr(problem, 'all_f1') and hasattr(problem, 'all_f2') and len(problem.all_f1) > 0:
+            all_solutions = np.column_stack([problem.all_f1, problem.all_f2])
+            plot.add(all_solutions, s=10, color="grey", alpha=0.3, label="History")
+
+        # Plot the final pareto_front in red
+        plot.add(pareto_front, s=30, color="red", alpha=0.8, label="Pareto Front")
+
+        # Add legend
+        plot.legend = True
+
+        # Construct file path
+        file_name = f"scatter_{cluster_mode}_{sample_idx}_seed{seed}"
         if k is not None:
-            plot_path = os.path.join(
-                "scatter_plots_files",
-                f"scatter_f1_vs_f2_{cluster_mode}_{sample_idx}_seed{seed}_k={k}.png",
-            )
-        else:
-            plot_path = os.path.join(
-                "scatter_plots_files",
-                f"scatter_f1_vs_f2_{cluster_mode}_{sample_idx}_seed{seed}.png",
-            )
-        plt.savefig(plot_path, dpi=300, bbox_inches="tight")
+            file_name += f"_k{k}"
+
+        plot_path = os.path.join("scatter_plots_files", f"{file_name}.png")
+
+        plot.save(plot_path, dpi=300)
         print(f"Scatter plot is saved to {plot_path}")
-        plt.close()
 
     @staticmethod
-    def plot_pareto_front(
-        res, extracted_data_name, cluster_mode, pop_size, sample_idx, seed
-    ):
-        if not os.path.exists("pareto"):
-            os.makedirs("pareto")
-        # pareto_plot = Scatter()
-        # pareto_plot.add(res.F, color="red")
-        pareto_front_df = pd.DataFrame(res.F, columns=["Error", "Distance"])
-        pareto_csv_filename = f"pareto/pareto_front_{extracted_data_name}_{cluster_mode}_{pop_size}_{sample_idx}_seed{seed}.csv"
-        pareto_front_df.to_csv(pareto_csv_filename, index=False)
+    def log_avg_hv_per_row(avg_hv, extracted_data_name, cluster_mode, k=None):
+        if not os.path.exists("hv_logs"):
+            os.makedirs("hv_logs")
 
-        # save the pareto front plot
-        plt.figure(figsize=(8, 6))
-        plt.scatter(
-            pareto_front_df["Error"],
-            pareto_front_df["Distance"],
-            c="red",
-            edgecolors="k",
-            alpha=0.7,
+        file_name = f"hv_logs/avg_hv_logs_{extracted_data_name}.csv"
+        file_exists = os.path.isfile(file_name)
+
+        # Create a dictionary for the new log entry
+        log_data = {"cluster_mode": cluster_mode}
+        if k is not None:
+            log_data["k"] = k
+        log_data.update(
+            {f"gen_{i + 1}": hv for i, hv in enumerate(avg_hv)}
         )
-        plt.xlabel("Error (f1)", fontsize=14)
-        plt.ylabel("Distance (f2)", fontsize=14)
-        plt.title(
-            f"Pareto Front {cluster_mode} (Sample: {sample_idx}, Seed: {seed})",
-            fontsize=16,
-        )
-        plt.grid(True)
-        plt.tight_layout()
-        pareto_plot_filename = f"pareto/pareto_front_{extracted_data_name}_{cluster_mode}_{pop_size}_{sample_idx}_seed{seed}.png"
-        plt.savefig(pareto_plot_filename, dpi=300)
-        plt.close()
 
-        print("Pareto front plot is saved.")
+        # Convert to DataFrame
+        new_log_df = pd.DataFrame([log_data])
 
-    @staticmethod
-    def log_results(
-        genomes,
-        col_names,
-        extracted_data_name,
-        cluster_mode,
-        pop_size,
-        data_wo_label,
-        sample_idx,
-        seed,
-    ):
-        folder_name = "nsga_results"
-        if not os.path.exists(folder_name):
-            os.makedirs(folder_name)
-        txt_file_path = os.path.join(
-            folder_name,
-            f"{extracted_data_name}_{cluster_mode}_{pop_size}_{sample_idx}_seed{seed}_nsga_results.txt",
-        )
-        if not os.path.exists(txt_file_path):
-            with open(txt_file_path, "w") as file:
-                sample = data_wo_label.loc[sample_idx]
-                val_dict = dict(zip(col_names, sample))
-                file.write(f"Original Sample (Index: {sample_idx}): {val_dict}\n")
-                for i, genome in enumerate(genomes):
-                    genome_dict = dict(zip(col_names, genome))
-                    row_str = ", ".join(
-                        [f"{key}: {value}" for key, value in genome_dict.items()]
-                    )
-                    file.write(f"{i} [{row_str}]\n")
+        # Safer file writing
+        if file_exists:
+            try:
+                existing_log_df = pd.read_csv(file_name)
+                new_log_df = pd.concat([existing_log_df, new_log_df], ignore_index=True)
+            except pd.errors.EmptyDataError:
+                # File was empty, new_log_df is already correct
+                pass
 
-    @staticmethod
-    def plot_avg_hv(avg_hv, sample_idx, cluster_mode):
-        plt.figure(figsize=(8, 6))
-        generations = range(1, len(avg_hv) + 1)
-        plt.plot(generations, avg_hv, color="black")
-        plt.title(f"AVG HV Convergence {cluster_mode} (Sample: {sample_idx})")
-        plt.xlabel("Generation")
-        plt.ylabel("Average Hypervolume")
-        plt.grid(True)
-        filename = f"avg_hv_sample_{sample_idx}_{cluster_mode}.png"
-        plt.savefig(filename, dpi=300, bbox_inches="tight")
-        plt.close()
-
-    @staticmethod
-    def log_avg_hv_per_row(samples_hv_avg, extracted_data_name, cluster_mode):
-        hv_df = pd.DataFrame(samples_hv_avg)
-        hv_csv_filename = f"{extracted_data_name}_{cluster_mode}_avg_hv_by_sample.csv"
-        # check if the file already exists, if it does not, write the header
-        write_header = not os.path.exists(hv_csv_filename)
-        # append the data if the file exists
-        hv_df.to_csv(hv_csv_filename, mode="a", header=write_header, index=False)
-        # hv_df.to_csv(hv_csv_filename, index=False)
-        print(
-            f"Average HV per generation for each sample is saved to {hv_csv_filename}"
-        )
+        # Write/Overwrite with updated data
+        new_log_df.to_csv(file_name, mode='w', header=True, index=False)
+        print(f"Hypervolume log saved to {file_name}")
 
     @staticmethod
     def plot_combined_pareto_front(
-        sample_idx,
-        seed,
-        res_without,
-        res_with,
-        extracted_data_name,
-        cluster_mode,
-        k=None,
+            sample_idx, seed, res_without, res_with, extracted_data_name, cluster_mode, k=None
     ):
-        plt.figure(figsize=(8, 6))
-        # plot without clustering (red)
-        df_without = pd.DataFrame(res_without, columns=["Error", "Distance"])
-        plt.scatter(
-            df_without["Error"],
-            df_without["Distance"],
-            c="red",
-            edgecolors="k",
-            alpha=0.6,
-            label="Without Clustering",
-        )
-        # plot with clustering (blue)
-        df_with = pd.DataFrame(res_with, columns=["Error", "Distance"])
-        plt.scatter(
-            df_with["Error"],
-            df_with["Distance"],
-            c="blue",
-            edgecolors="k",
-            alpha=0.6,
-            label=cluster_mode,
-        )
-
-        plt.title(f"Pareto Front Comparison (Sample: {sample_idx}, Seed: {seed})")
-        plt.xlabel("Error (f1)")
-        plt.ylabel("Distance (f2)")
-        plt.legend()
-        plt.grid(True)
-        plt.tight_layout()
-
         if not os.path.exists("pareto_combined"):
             os.makedirs("pareto_combined")
 
-        if k is not None:
+        plt.figure(figsize=(8, 6))
+        plt.scatter(
+            res_without[:, 0],
+            res_without[:, 1],
+            c="blue",
+            label="Without Clustering",
+            alpha=0.7,
+        )
+        plt.scatter(
+            res_with[:, 0],
+            res_with[:, 1],
+            c="red",
+            label=f"With {cluster_mode}",
+            alpha=0.7,
+        )
+        plt.title(
+            f"Pareto Front Comparison (Sample: {sample_idx}, Seed: {seed})",
+            fontsize=16,
+            fontweight="bold",
+        )
+        plt.xlabel("F1: Error", fontsize=14, fontweight="bold")
+        plt.ylabel("F2: Distance", fontsize=14, fontweight="bold")
+        plt.legend(fontsize=12)
+        plt.grid(True)
+        plt.tight_layout(pad=2.0)
+
+        if k:
             plt.savefig(
                 f"pareto_combined/pareto_comparison_sample_{sample_idx}_seed_{seed}_k={k}.png",
                 dpi=300,
@@ -221,7 +302,7 @@ class Helper:
 
     @staticmethod
     def plot_combined_avg_hv(
-        avg_hv_without, avg_hv_with, sample_idx, cluster_mode, k=None
+            avg_hv_without, avg_hv_with, sample_idx, cluster_mode, k=None
     ):
         fig, axs = plt.subplots(2, 1, figsize=(12, 8), sharey=True)
         gens = range(1, len(avg_hv_without) + 1)
@@ -240,16 +321,14 @@ class Helper:
         fig.suptitle(f"AVG HV Convergence (Sample: {sample_idx})", fontsize=14)
         plt.tight_layout()
 
-        if not os.path.exists("avg_hv_combined"):
-            os.makedirs("avg_hv_combined")
+        if not os.path.exists("hv_plots"):
+            os.makedirs("hv_plots")
 
-        if k is not None:
+        if k:
             plt.savefig(
-                f"avg_hv_combined/avg_hv_combined_sample_{sample_idx}_k={k}.png",
-                dpi=300,
+                f"hv_plots/avg_hv_convergence_sample_{sample_idx}_k={k}.png", dpi=300
             )
         else:
-            plt.savefig(
-                f"avg_hv_combined/avg_hv_combined_sample_{sample_idx}.png", dpi=300
-            )
+            plt.savefig(f"hv_plots/avg_hv_convergence_sample_{sample_idx}.png", dpi=300)
+
         plt.close()

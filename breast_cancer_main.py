@@ -1,17 +1,23 @@
-# last updated: 3/27/2025
 # main.py
 
 import timeit
 import pandas as pd
+import numpy as np
+# [REMOVED] cdist is no longer needed here
 from DataProcessing import DataProcessing
 from ModelTrainer import ModelTrainer
 from CFGenerator import CFGenerator
 from CFProblem import CFProblem
 from KMeansClustering import KMeansClustering
+from Helper import Helper  # [MODIFIED] Import Helper
 import random
 
 # good is 0
 # bad is 1
+
+# [REMOVED] All helper functions moved to Helper.py
+# def find_nearest_viable_cluster(...):
+# def find_seed_and_boundaries(...):
 
 
 def main():
@@ -21,6 +27,10 @@ def main():
     class_label = "Diagnosis"
     mapping_values = {"M": 1, "B": 0}
     seed = 42
+
+    # [MODIFIED] Use the same sample index for consistent testing
+    bad_sample_index = 368
+
     data_processing = DataProcessing(file_name, class_label, mapping_values)
     data_wo_label, target, min_values, max_values = data_processing.load_and_process()
 
@@ -45,7 +55,12 @@ def main():
     bad_samples = combined_data[combined_data[class_label] == original_label]
     if bad_samples.empty:
         raise ValueError("No bad samples found in the dataset.")
-    bad_sample_index = random.choice(bad_samples.index.tolist())
+
+    # [MODIFIED] Check if our fixed sample is valid
+    if bad_sample_index not in bad_samples.index:
+        print(f"Warning: Sample {bad_sample_index} is not a 'bad' sample. Choosing a random one.")
+        bad_sample_index = random.choice(bad_samples.index.tolist())
+
     print(f"bad_sample_index: {bad_sample_index}")
 
     scores = {}
@@ -87,14 +102,10 @@ def main():
     plot_name = f"distance_plot_{best_cluster}_k{best_k}.png"
     kmeans_clustering.generate_distance_plot(ordered_data, class_label, best_cluster, plot_name)
 
-    # --- START: AHS Stage 1 (Feasibility Check)
-    # We need the final cluster assignments and label counts
-    # We can re-use the 'kmeans_clustering' object and the 'best_k'
+    # --- START: AHS Stage 1 (Feasibility Check) ---
     final_clustered_df, final_label_counts = kmeans_clustering.compute_kmeans(k=best_k)
-
-    # Get the counts for our specific 'best_cluster' (e.g., "C3")
     cluster_counts = final_label_counts.get(best_cluster, {})
-    good_samples_in_cluster = cluster_counts.get(desired_label, 0)  # desired_label is 0 (Benign)
+    good_samples_in_cluster = cluster_counts.get(desired_label, 0)
 
     if good_samples_in_cluster > 0:
         # --- STRATEGY 1: VIABLE CLUSTER (Run as normal) ---
@@ -112,10 +123,8 @@ def main():
             seed
         )
 
-        # This is the corrected call (fixes the TypeError)
         print(f": Generating counterfactuals for sample {bad_sample_index}...")
         cf_gen_cluster.generate_counterfactuals(
-            data_wo_label,
             desired_label,
             bad_sample_index
         )
@@ -123,26 +132,60 @@ def main():
     else:
         # --- STRATEGY 2: EMPTY-CLASS CLUSTER (Trigger Fallback) ---
         print(f"\n: WARNING: Cluster {best_cluster} is an 'Empty-Class Cluster'.")
-        print(": No good samples found. Initiating Stage 2 Fallback Strategy...")[1]
+        print(f": No good samples found. Initiating Stage 2 Fallback Strategy...")
 
-        #
-        # This is where you will build the next part of your project (Stage 2 Fallback):
-        # 1. Call your new "find_nearest_viable_cluster()" function
-        # 2. Call your new "find_seed_instance()" function
-        # 3. Define a new search space (new_min, new_max) based on that seed
-        # 4. Call CFGenerator using those new min/max values
-        #
-        print(": FALLBACK LOGIC NOT YET IMPLEMENTED.")
+        try:
+            # 1. Inter-Cluster Seeding
+            all_cluster_labels = sorted(list(final_label_counts.keys()))
 
-    # -----------------------------------------------------------------
+            # [MODIFIED] Call Helper method
+            fallback_cluster_name = Helper.find_nearest_viable_cluster(
+                best_cluster,
+                kmeans_clustering.kmeans.cluster_centers_,
+                all_cluster_labels,
+                final_label_counts,
+                desired_label
+            )
+
+            # 2. Target Identification & Boundary Definition
+            # [MODIFIED] Call Helper method
+            fallback_min, fallback_max = Helper.find_seed_and_boundaries(
+                fallback_cluster_name,
+                final_clustered_df,
+                data_wo_label,
+                bad_sample_index,
+                desired_label,
+                class_label
+            )
+
+            print(":   New search boundaries defined. Running guided optimization...")
+            fallback_dataset_name = clustered_dataset_name + "_fallback"
+
+            # 3. Guided Optimization
+            cf_gen_fallback = CFGenerator(
+                CFProblem,
+                model,
+                data_wo_label,
+                fallback_dataset_name,
+                "kmeans_fallback",
+                fallback_min,
+                fallback_max,
+                seed
+            )
+
+            print(f":   Generating counterfactuals for sample {bad_sample_index}...")
+            cf_gen_fallback.generate_counterfactuals(
+                desired_label,
+                bad_sample_index
+            )
+
+        except Exception as e:
+            print(f":   FALLBACK FAILED: {e}")
     # --- END: AHS Logic ---
-    cf_gen_cluster.generate_counterfactuals(
-        data_wo_label, desired_label, bad_sample_index,
-    )
 
     stop = timeit.default_timer()
     time_minutes = (stop - start) / 60
-    print(f"Total time: {time_minutes} minutes")
+    print(f"\nTotal time: {time_minutes:.4f} minutes")
 
 
 if __name__ == "__main__":

@@ -13,15 +13,15 @@ from Helper import Helper
 
 class CFGenerator:
     def __init__(
-        self,
-        problem_class,
-        model,
-        data_wo_label,
-        extracted_data_name,
-        cluster_mode,
-        min_values,
-        max_values,
-        seed,
+            self,
+            problem_class,
+            model,
+            data_wo_label,
+            extracted_data_name,
+            cluster_mode,
+            min_values,
+            max_values,
+            seed,
     ):
         self.problem_class = problem_class
         self.model = model
@@ -46,36 +46,37 @@ class CFGenerator:
             save_history=True,
             verbose=False,
         )
+        hist = res.history
+        # print(hist)
+        hist_X = [e.pop.get("X") for e in hist]
+        hist_F = [e.pop.get("F") for e in hist]
 
-        Helper.plot_scatter(problem, sample_idx, random_seed, self.cluster_mode)
-        col_names = self.data_wo_label.columns.tolist()
-
-        Helper.log_results(
-            res.opt.get("X"),
-            col_names,
+        # plot pareto front
+        # [MODIFIED] Pass 'problem' object to get all_f1/all_f2
+        Helper.plot_scatter(
+            res.F, problem, sample_idx, self.seed, self.cluster_mode
+        )
+        Helper.save_hist_FX(
+            hist_F,
+            hist_X,
             self.extracted_data_name,
             self.cluster_mode,
             pop_size,
-            self.data_wo_label,
             sample_idx,
-            random_seed,
+            self.data_wo_label,
         )
 
-        hist_F, hist_X = [], []
-        for algo in res.history:
-            opt = algo.opt
-            feas = np.where(opt.get("feasible"))[0]
-            hist_F.append(opt.get("F")[feas])
-            hist_X.append(opt.get("X")[feas])
+        # get hypervolume
+        # ref_point = np.array([1.0, 1.0])
+        # approx_ideal = res.F.min(axis=0)
+        # approx_nadir = res.F.max(axis=0)
 
-        approx_ideal = res.F.min(axis=0)
-        approx_nadir = res.F.max(axis=0)
-        buffer = 0.1
-        ref_point = np.array(
-            [problem.max_error + buffer, problem.max_distance + buffer]
-        )
+        # [MODIFIED] Use the max error/distance tracked by the problem
+        approx_ideal = np.array([0.0, 0.0])
+        approx_nadir = np.array([problem.max_error, problem.max_distance])
+
         metric = Hypervolume(
-            ref_point=ref_point,
+            ref_point=np.array([1.0, 1.0]),  # Use a fixed [1, 1] ref_point for normalized data
             norm_ref_point=False,
             zero_to_one=True,
             ideal=approx_ideal,
@@ -83,25 +84,17 @@ class CFGenerator:
         )
         hv = [metric.do(F_gen) for F_gen in hist_F]
 
-        # hv_results.append(hv)
         all_hist_X.append(hist_X)
         all_hist_F.append(hist_F)
 
-        # hv_results = np.array(hv_results)
-        # avg_hv_across_seeds = np.mean(hv_results, axis=0)
-
-        # return all_hist_X, all_hist_F, hv
         return res.F, hv
 
     def generate_counterfactuals(
-        self,
-        data_wo_label,
-        desired_label,
-        sample_idx,
+            self,
+            desired_label,
+            sample_idx,
     ):
-
-        sample = data_wo_label.loc[sample_idx].values  # convert to 2D array
-        # samples_hv_avg = []
+        sample = self.data_wo_label.loc[sample_idx].values
 
         problem = self.problem_class(
             self.model,
@@ -112,8 +105,13 @@ class CFGenerator:
             min_values=self.min_values,
             max_values=self.max_values,
         )
+
         pop_size = 100
         num_gen = 50
         pareto_F, hv = self.run_optimization(problem, pop_size, num_gen, sample_idx)
 
+        print(f":   Final Pareto front generated with {len(pareto_F)} solutions.")
+        print(f":   Final Hypervolume: {hv[-1]:.4f}")
+
+        # [FIX] Add the return statement that was missing
         return pareto_F, hv

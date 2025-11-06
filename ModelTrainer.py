@@ -1,4 +1,3 @@
-# last updated: 3/19/2025
 # model_trainer.py
 
 import pickle
