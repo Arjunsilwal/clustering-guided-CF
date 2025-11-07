@@ -1,12 +1,6 @@
-# last updated: 4/6/2025
-# main.py
-# this script is updated version of main with hierarchical clustering
-# [MODIFIED] Now includes AHS Fallback Logic
-
 import timeit
 import pandas as pd
 import numpy as np
-# [REMOVED] cdist is no longer needed here
 from DataProcessing import DataProcessing
 from ModelTrainer import ModelTrainer
 from CFGenerator import CFGenerator
@@ -19,9 +13,6 @@ import random
 # good is 0
 # bad is 1
 
-# [REMOVED] All helper functions moved to Helper.py
-# def find_nearest_viable_sample(...):
-
 
 def main():
     start = timeit.default_timer()
@@ -30,8 +21,6 @@ def main():
     class_label = "Diagnosis"
     mapping_values = {"M": 1, "B": 0}
     seed = 42
-
-    # [MODIFIED] Use the same sample index for consistent testing
     bad_sample_index = 368
 
     data_processing = DataProcessing(file_name, class_label, mapping_values)
@@ -39,10 +28,9 @@ def main():
 
     combined_data = pd.concat([data_wo_label, target], axis=1)
 
-    # [MODIFIED] Pass correct data to trainer
     model_trainer = ModelTrainer(
-        dataset=data_wo_label,  # Use data_wo_label
-        target=target,  # Use target
+        dataset=data_wo_label,
+        target=target,
         class_label=class_label,
         dataset_name=extracted_data_name,
         model_choice="SVC",
@@ -52,24 +40,46 @@ def main():
     original_label = 1  # 1 is malignant
     desired_label = 0  # 0 is benign
 
-    # cf generation without clustering
     print(f"Original min: {min_values}, Original max: {max_values}")
 
     bad_samples = combined_data[combined_data[class_label] == original_label]
     if bad_samples.empty:
         raise ValueError("No bad samples found in the dataset.")
-
-    # [MODIFIED] Check if our fixed sample is valid
     if bad_sample_index not in bad_samples.index:
         print(f"Warning: Sample {bad_sample_index} is not a 'bad' sample. Choosing a random one.")
         bad_sample_index = random.choice(bad_samples.index.tolist())
-
     print(f"bad_sample_index: {bad_sample_index}")
 
+    # ---
+    # [NEW] STEP 1: RUN THE "NO CLUSTERING" BASELINE
+    # ---
+    print("\n: --- Running Baseline (No Clustering) ---")
+    baseline_dataset_name = extracted_data_name + "_baseline"
+    try:
+        cf_gen_baseline = CFGenerator(
+            CFProblem,
+            model,
+            data_wo_label,
+            baseline_dataset_name,
+            "baseline",
+            min_values,  # Use original min values
+            max_values,  # Use original max values
+            seed
+        )
+        print(f": Generating counterfactuals for sample {bad_sample_index}...")
+        cf_gen_baseline.generate_counterfactuals(
+            desired_label,
+            bad_sample_index
+        )
+    except Exception as e:
+        print(f":   BASELINE FAILED: {e}")
+
+    # ---
+    # [NEW] STEP 2: RUN THE "AHS (HIERARCHICAL)" STRATEGY
+    # ---
+    print("\n: --- Running AHS (Hierarchical) ---")
     cluster_method = "hierarchical"
 
-    # --- Hierarchical Clustering ---
-    print("\n: --- Starting Hierarchical Clustering ---")
     h_cluster = HierarchicalClustering(
         combined_data,
         original_label,
@@ -84,7 +94,6 @@ def main():
         best_new_min,
         best_new_max,
     ) = h_cluster.find_optimal_cluster()
-    # --- END Hierarchical Clustering ---
 
     # --- START: AHS Stage 1 (Feasibility Check) ---
     good_samples_in_cluster = best_cluster_data[
@@ -122,7 +131,6 @@ def main():
 
         try:
             # 1. Find nearest viable sample
-            # [MODIFIED] Call Helper method
             seed_instance_features = Helper.find_nearest_viable_sample(
                 data_wo_label,
                 combined_data,
@@ -135,7 +143,6 @@ def main():
             # 2. Target Identification & Boundary Definition
             original_instance_features = data_wo_label.loc[[bad_sample_index]]
 
-            # [MODIFIED] Call the centralized function from the Helper class
             fallback_min, fallback_max = Helper.find_seed_and_boundaries_from_sample(
                 original_instance_features,
                 seed_instance_features
